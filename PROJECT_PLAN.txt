@@ -1,0 +1,738 @@
+================================================================================
+ 원두 품질 진단 & 로스팅 관리 솔루션 (Coffee Bean Quality & Roasting AI)
+ - 이미지 분석 기반 CNN 프로젝트 전체 설계서 -
+================================================================================
+
+[프로젝트 한 줄 요약]
+원두 이미지를 입력받아 (1) 결점두/정상두 분류, (2) 로스팅 단계(Green~Italian)
+판별, (3) 품질 점수/리포트 생성까지 수행하는 경량 CNN 기반 솔루션.
+
+[핵심 목표]
+ - 분류 정확도(Top-1) 90% 이상
+ - 로컬 PC(노트북 GPU 없어도)에서 실시간 추론 30FPS 이상
+ - 학습/추론/시각화 파이프라인 모듈화 → 재현성 보장
+ - Git/GitHub로 협업 가능한 구조
+
+
+================================================================================
+0. 프로젝트 시나리오 (왜 만드는가)
+================================================================================
+- 사용자: 소형 로스터리 카페 사장 / 홈로스터 / QC 담당자
+- 문제 상황:
+  * 결점두(벌레먹음, 깨짐, 곰팡이, 미성숙두) 수작업 선별 → 시간/오차 큼
+  * 로스팅 단계 판별을 사람 눈/소리로만 → 일관성 부족
+- 해결: 카메라(웹캠/스마트폰)로 원두를 비추면
+  * 결점 여부 + 종류 표시
+  * 현재 로스팅 단계(Green / Light / Medium / Dark / Italian) 표시
+  * 배치(batch) 단위 품질 리포트(JSON/CSV) 자동 생성
+- 데모: 실시간 웹캠 데모 (OpenCV) + Streamlit/Gradio 웹 UI
+
+
+================================================================================
+1. 분류 문제 설계 (Task Definition)
+================================================================================
+[Task A] 결점두 분류 (Multi-class Classification)
+  Classes (예시 6):
+    0. normal           (정상두)
+    1. broken           (깨짐)
+    2. insect_damage    (벌레먹음)
+    3. immature         (미성숙/quaker)
+    4. black/sour       (흑두/발효두)
+    5. husk/foreign     (껍질/이물질)
+
+[Task B] 로스팅 단계 분류 (Ordinal Classification)
+  Classes (5):
+    0. Green   1. Light   2. Medium   3. Dark   4. Italian
+  -> 순서가 있는 라벨이므로 Ordinal Loss / Label Smoothing 고려
+
+[Task C] (확장) 품질 점수 회귀
+  - SCA 그린빈 평가 기준 응용 → 0~100 점수 예측 (Regression head)
+
+>>> MVP 단계에서는 Task A + Task B (Multi-Task CNN 1개) 로 진행 권장.
+    하나의 backbone + 두 개의 head (defect_head, roast_head)
+
+
+================================================================================
+2. 데이터셋 설계 (가장 중요!! - 보완 포인트)
+================================================================================
+[2-1] 데이터 수집 소스
+  (1) 공개 데이터셋
+      - Kaggle "Coffee Bean Dataset" (roast level: Green/Light/Medium/Dark)
+      - USK-Coffee dataset (defect classification)
+      - Roboflow Universe "coffee bean" 검색 → 다수 존재
+  (2) 자가 수집 (필수, 도메인 갭 줄이기)
+      - 스마트폰 + 흰 배경(A4) + LED 조명 고정
+      - 원두 1알씩 + 여러 알 동시 두 가지 모두 촬영
+      - 클래스당 최소 500장, 목표 1000~2000장
+  (3) 합성 데이터(옵션)
+      - Copy-Paste augmentation: 정상두 위에 결점두 합성
+
+[2-2] 라벨링 도구
+  - 단일 라벨(분류): 폴더 구조로 라벨 (ImageFolder 형식)
+      data/raw/<task>/<class_name>/img_xxx.jpg
+  - 검출까지 확장 시: Roboflow / CVAT / LabelImg
+
+[2-3] 데이터 분할 (Data Leakage 방지!!)
+  - train : val : test = 70 : 15 : 15
+  - 같은 "원두 알/같은 촬영 세션"이 train/test에 동시에 들어가지 않도록
+    "촬영 세션 ID" 기준 GroupSplit 사용 (sklearn GroupShuffleSplit)
+  - 클래스 불균형 → StratifiedGroupKFold
+
+[2-4] 전처리
+  - Resize 224x224 (또는 모델별 input size)
+  - Normalize (ImageNet mean/std)
+  - 배경 제거(옵션): rembg 또는 단순 thresholding (흰 배경이면 OTSU)
+
+[2-5] 데이터 증강 (성능 향상 핵심)
+  학습 시:
+    - RandomResizedCrop, HorizontalFlip, VerticalFlip (원두는 회전 불변)
+    - RandomRotation(±30)
+    - ColorJitter(brightness, contrast, saturation) ← 로스팅 색상 중요하므로 saturation은 약하게
+    - GaussianBlur, RandomErasing
+    - MixUp / CutMix (강한 정규화)
+    - Albumentations 라이브러리 권장
+  주의:
+    - 로스팅 단계 분류에서는 ColorJitter 강하게 주면 안됨(색이 라벨!)
+      → Task B 전용 약한 증강 파이프라인 별도 구성
+
+[2-6] 데이터셋 카드(Dataset Card) 작성
+  - docs/dataset_card.md 에 수집 조건/조명/카메라/라벨 기준 명시
+  - 재현성 + 평가 신뢰도 ↑
+
+
+================================================================================
+3. 모델 설계 - "CNN이 뭔가, 어떤 CNN을 쓸 것인가"
+================================================================================
+[3-1] CNN(Convolutional Neural Network) 한 줄 정의
+  - 이미지의 "지역적 패턴(엣지→텍스처→부분→객체)"을 컨볼루션 필터로
+    계층적으로 학습하는 신경망. Conv + Pooling + Activation 반복 구조.
+
+[3-2] CNN 계열 모델 종류 (시대순 흐름)
+  1) LeNet-5 (1998)              - 손글씨, 너무 작음(학습 데모용)
+  2) AlexNet (2012)              - ImageNet 우승, ReLU/Dropout 도입
+  3) VGG16/19 (2014)             - 단순 3x3 conv 반복, 무겁지만 transfer 잘됨
+  4) GoogLeNet/Inception (2014)  - Inception module
+  5) ResNet18/34/50 (2015)       - Skip connection, **사실상 표준 baseline**
+  6) DenseNet (2016)             - dense connection
+  7) MobileNetV2/V3 (2018/19)    - Depthwise sep conv, **모바일/CPU 친화**
+  8) EfficientNet B0~B7 (2019)   - Compound scaling, 정확도/효율 균형
+  9) EfficientNetV2 (2021)       - 학습 속도 ↑
+ 10) ConvNeXt (2022)             - Transformer 트렌드를 CNN에 역수입, SOTA급
+ 11) (참고) ViT/Swin             - CNN은 아니지만 비교군으로 자주 사용
+
+[3-3] "내 PC에서 돌아가는" 추천 모델 (로컬 친화)
+  GPU 없음(노트북 CPU만):
+    ★ MobileNetV3-Small / Large   (param 2.5M / 5.4M, CPU 추론 빠름)
+    ★ EfficientNet-B0             (param 5.3M, 정확도 좋음)
+    ○ ResNet18                    (param 11.7M, 안정적 baseline)
+  GPU 있음(GTX1650 / RTX3060급):
+    ★ EfficientNet-B0 ~ B2
+    ★ ConvNeXt-Tiny               (param 28M, 정확도 ↑)
+    ○ ResNet50
+
+  >>> 본 프로젝트 권장:
+      Baseline  : ResNet18  (빠르게 파이프라인 검증)
+      Main      : EfficientNet-B0 (transfer learning)
+      Light/Demo: MobileNetV3-Small (실시간 웹캠용)
+
+[3-4] 아키텍처 (Multi-Task Head)
+  Input(3x224x224)
+    └─ Backbone (EfficientNet-B0, pretrained=ImageNet, freeze 후 fine-tune)
+        └─ GlobalAvgPool → Feature(1280-d)
+            ├─ Head A: Linear(1280→256)→ReLU→Dropout(0.3)→Linear(256→6)  # defect
+            └─ Head B: Linear(1280→256)→ReLU→Dropout(0.3)→Linear(256→5)  # roast
+
+  Loss = α * CE(defect) + β * CE(roast)         (α=1.0, β=1.0 → 튜닝)
+  - Class imbalance → CrossEntropy(weight=class_weights) or Focal Loss
+  - Roast head는 Label Smoothing(0.1) 또는 Ordinal regression(CORAL) 적용
+
+
+================================================================================
+4. 모델 성능 올리는 방법 (Performance Boosting Checklist)
+================================================================================
+[4-1] 데이터 레벨 (효과 가장 큼!!)
+  □ 데이터 양 늘리기 (클래스당 1000+장)
+  □ 클래스 균형 맞추기 (오버샘플링 / WeightedRandomSampler)
+  □ 강한 증강: MixUp, CutMix, RandAugment, Albumentations
+  □ 라벨 노이즈 제거: 직접 검수 + cleanlab 라이브러리
+  □ 도메인 일치: 실제 사용 환경(조명/배경)과 동일하게 수집
+
+[4-2] 모델 레벨
+  □ Pretrained weights 사용 (timm 라이브러리 강력 추천)
+  □ Backbone 단계적 unfreeze (head만 5epoch → 전체 fine-tune)
+  □ 더 큰 모델로 점진적 교체 (B0 → B2 → ConvNeXt-Tiny)
+  □ Dropout, BatchNorm 위치 점검
+  □ Test-Time Augmentation (TTA): flip/rotate 평균
+
+[4-3] 학습 레벨
+  □ Optimizer: AdamW (lr=1e-3, weight_decay=1e-4)
+  □ Scheduler: CosineAnnealingLR or OneCycleLR
+  □ Early Stopping (val_loss patience=7)
+  □ Mixed Precision (torch.cuda.amp) → 속도 2배
+  □ Gradient Clipping (max_norm=1.0)
+  □ K-Fold Cross Validation (최종 5-fold ensemble)
+
+[4-4] 손실/평가 레벨
+  □ Class weight 조정
+  □ Focal Loss (불균형 심할 때)
+  □ Confusion Matrix 보고 클래스별 약점 파악 → 데이터 추가
+
+[4-5] 후처리/배포 레벨
+  □ ONNX export → onnxruntime 추론 (CPU에서도 빠름)
+  □ Quantization (INT8) → MobileNet에 효과적
+  □ Knowledge Distillation: 큰모델(Teacher) → 작은모델(Student)
+
+
+================================================================================
+5. 프로젝트 파일 구조 (1단계: 파일 구조 짜기)
+================================================================================
+mini_project/
+├── README.md                    # 프로젝트 소개, 실행법, 결과
+├── requirements.txt             # 패키지 목록
+├── .gitignore                   # data/, *.pth, __pycache__/ 등
+├── PROJECT_PLAN.txt             # (이 문서)
+├── configs/
+│   ├── default.yaml             # 모델/학습 하이퍼파라미터
+│   └── mobilenet_demo.yaml
+├── data/
+│   ├── raw/                     # 원본 이미지 (git 제외)
+│   │   ├── defect/{normal,broken,insect,...}/
+│   │   └── roast/{green,light,medium,dark,italian}/
+│   ├── processed/               # 리사이즈/정제 후
+│   └── splits/                  # train.csv / val.csv / test.csv
+├── notebooks/
+│   ├── 01_eda.ipynb             # 데이터 분포/시각화
+│   ├── 02_baseline_resnet18.ipynb
+│   └── 03_error_analysis.ipynb
+├── src/
+│   ├── __init__.py
+│   ├── dataset.py               # Dataset, DataLoader, Augmentation
+│   ├── model.py                 # Backbone + Multi-task Head
+│   ├── losses.py                # Focal, Ordinal, MultiTask Loss
+│   ├── train.py                 # 학습 루프
+│   ├── evaluate.py              # 평가, Confusion Matrix
+│   ├── infer.py                 # 단일 이미지 추론
+│   ├── webcam_demo.py           # 실시간 웹캠 (no save)
+│   ├── export_onnx.py           # 모델 경량화/배포
+│   └── utils/
+│       ├── seed.py              # 재현성
+│       ├── logger.py            # TensorBoard / wandb
+│       └── visualize.py         # GradCAM 등
+├── app/
+│   └── streamlit_app.py         # 웹 데모 UI
+├── tests/
+│   ├── test_dataset.py
+│   └── test_model.py
+├── checkpoints/                 # 학습된 모델 (git 제외, .gitkeep만)
+└── docs/
+    ├── dataset_card.md
+    ├── architecture.md
+    └── results.md
+
+
+================================================================================
+6. Step-by-Step 실행 순서 (직접 해야할 것들)
+================================================================================
+
+[STEP 1] 파일 구조 생성
+  - 위 5번 트리대로 폴더/빈 파일 생성
+  - PowerShell:
+      New-Item -ItemType Directory -Path data/raw, data/processed, data/splits,
+        src/utils, configs, notebooks, app, tests, checkpoints, docs -Force
+  - 각 폴더 내 .gitkeep 파일 추가 (빈 폴더 git 추적용)
+
+[STEP 2] Git / GitHub 연동
+  1) git init
+  2) .gitignore 작성 (아래 12번 참고)
+  3) GitHub에서 빈 레포 생성: coffee-bean-cnn
+  4) git remote add origin https://github.com/<user>/coffee-bean-cnn.git
+  5) git branch -M main
+  6) git add . ; git commit -m "chore: initial project skeleton"
+  7) git push -u origin main
+  8) 브랜치 전략:
+       main      - 안정 버전
+       dev       - 통합 개발
+       feature/* - 기능별 (feature/dataset, feature/model, feature/demo)
+  9) Issue / Project Board로 작업 관리
+ 10) (옵션) GitHub Actions: pytest 자동 실행 CI
+
+[STEP 3] 가상환경 + 패키지 설치
+  - python -m venv .venv
+  - .\.venv\Scripts\activate
+  - pip install -r requirements.txt
+  - requirements.txt 권장 내용:
+      torch>=2.1
+      torchvision>=0.16
+      timm>=0.9.12
+      albumentations>=1.4
+      opencv-python>=4.9
+      numpy, pandas, scikit-learn, matplotlib, seaborn
+      pyyaml, tqdm
+      tensorboard
+      streamlit
+      onnx, onnxruntime
+      grad-cam
+      pytest
+
+[STEP 4] 데이터 수집 & 정리
+  - 공개 데이터 다운로드 → data/raw/ 에 클래스별 폴더로
+  - 자가 수집(스마트폰): 클래스당 최소 200장부터 시작
+  - 파일명 규칙: <class>_<sessionID>_<idx>.jpg
+  - python scripts/make_splits.py → data/splits/{train,val,test}.csv
+
+[STEP 5] EDA (notebooks/01_eda.ipynb)
+  - 클래스별 이미지 수, 평균 색상, 해상도 분포
+  - 샘플 이미지 grid 시각화
+  - 이상 이미지(블러, 잘림) 제거
+
+[STEP 6] Baseline 학습 (ResNet18)
+  - python -m src.train --config configs/default.yaml --model resnet18
+  - 목표: val_acc 70% 이상 (파이프라인 검증)
+
+[STEP 7] Main 모델 학습 (EfficientNet-B0, Multi-task)
+  - timm.create_model('efficientnet_b0', pretrained=True, num_classes=0)
+  - 2-stage 학습:
+      Stage1: backbone freeze, head만 5 epoch
+      Stage2: 전체 unfreeze, lr=1e-4, 30~50 epoch
+  - Mixed Precision + CosineLR
+  - TensorBoard 로그 확인
+
+[STEP 8] 평가 & 에러 분석
+  - python -m src.evaluate
+  - Confusion Matrix, per-class precision/recall/F1
+  - 잘못 분류한 이미지 모아서 시각화 (notebooks/03)
+  - GradCAM으로 모델이 어디 보는지 확인 → 배경만 보면 데이터 문제
+
+[STEP 9] 성능 개선 사이클 (4번 체크리스트 적용)
+  - MixUp/CutMix 추가
+  - 데이터 추가 수집(약한 클래스 위주)
+  - 모델 교체 실험: B0 → ConvNeXt-Tiny
+  - K-Fold Ensemble
+
+[STEP 10] 실시간 데모 (no save)
+  - src/webcam_demo.py
+  - OpenCV VideoCapture(0) → 매 프레임 추론 → 화면에 라벨/확률 오버레이
+  - 기존 수업의 hand+face+pose 프레임워크 구조 응용:
+      * 매 프레임 read → 전처리 → model(img) → 결과 draw → imshow
+      * 저장 없음(no save), 'q' 누르면 종료
+
+[STEP 11] 웹 UI (app/streamlit_app.py)
+  - 이미지 업로드 → 결과 카드(결점 종류, 로스팅 단계, 확률 bar)
+  - GradCAM 히트맵 토글
+  - 배치 업로드 시 CSV 리포트 다운로드
+
+[STEP 12] 모델 경량화 & 배포
+  - torch.onnx.export → model.onnx
+  - onnxruntime로 CPU 추론 속도 비교
+  - (옵션) INT8 quantization
+
+[STEP 13] 문서화 & 발표자료
+  - README에 결과표/그래프/데모 GIF
+  - docs/results.md: 모델별 비교표, ablation
+  - 한계점 + 향후 개선 명시
+
+
+================================================================================
+7. 코드 구조 (핵심 파일별 스켈레톤)
+================================================================================
+
+----- src/dataset.py -----
+import torch
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import pandas as pd
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+class CoffeeBeanDataset(Dataset):
+    def __init__(self, csv_path, transform=None):
+        self.df = pd.read_csv(csv_path)   # columns: path, defect_label, roast_label
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        img = np.array(Image.open(row['path']).convert('RGB'))
+        if self.transform:
+            img = self.transform(image=img)['image']
+        return img, int(row['defect_label']), int(row['roast_label'])
+
+def get_transforms(train=True):
+    if train:
+        return A.Compose([
+            A.RandomResizedCrop(224, 224, scale=(0.8,1.0)),
+            A.HorizontalFlip(), A.VerticalFlip(),
+            A.Rotate(limit=30),
+            A.ColorJitter(0.2,0.2,0.1,0.05),    # roast용은 약하게
+            A.Normalize(), ToTensorV2(),
+        ])
+    return A.Compose([A.Resize(224,224), A.Normalize(), ToTensorV2()])
+
+
+----- src/model.py -----
+import torch.nn as nn
+import timm
+
+class CoffeeNet(nn.Module):
+    def __init__(self, backbone='efficientnet_b0',
+                 n_defect=6, n_roast=5, pretrained=True):
+        super().__init__()
+        self.backbone = timm.create_model(backbone, pretrained=pretrained,
+                                          num_classes=0, global_pool='avg')
+        feat = self.backbone.num_features
+        self.defect_head = nn.Sequential(
+            nn.Linear(feat,256), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(256, n_defect))
+        self.roast_head = nn.Sequential(
+            nn.Linear(feat,256), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(256, n_roast))
+
+    def forward(self, x):
+        f = self.backbone(x)
+        return self.defect_head(f), self.roast_head(f)
+
+
+----- src/losses.py -----
+import torch.nn as nn
+class MultiTaskLoss(nn.Module):
+    def __init__(self, alpha=1.0, beta=1.0, w_defect=None, w_roast=None):
+        super().__init__()
+        self.ce_d = nn.CrossEntropyLoss(weight=w_defect, label_smoothing=0.05)
+        self.ce_r = nn.CrossEntropyLoss(weight=w_roast,  label_smoothing=0.10)
+        self.a, self.b = alpha, beta
+    def forward(self, out_d, out_r, y_d, y_r):
+        return self.a*self.ce_d(out_d,y_d) + self.b*self.ce_r(out_r,y_r)
+
+
+----- src/train.py (의사코드) -----
+1. config 로드 (yaml)
+2. seed 고정
+3. dataset/loader 생성 (train/val)
+4. model, loss, optimizer(AdamW), scheduler(CosineLR), scaler(amp)
+5. for epoch in range(E):
+       train_one_epoch() → logger.log()
+       val = evaluate()
+       if val.acc > best: save checkpoint
+       early stopping 체크
+6. 최종 test 평가, confusion matrix 저장
+
+
+----- src/webcam_demo.py (no save, 수업 프레임워크 응용) -----
+import cv2, torch
+from src.model import CoffeeNet
+from src.dataset import get_transforms
+
+model = CoffeeNet().eval()
+model.load_state_dict(torch.load('checkpoints/best.pth', map_location='cpu'))
+tf = get_transforms(train=False)
+DEFECT = ['normal','broken','insect','immature','black','husk']
+ROAST  = ['green','light','medium','dark','italian']
+
+cap = cv2.VideoCapture(0)
+while True:
+    ok, frame = cap.read()
+    if not ok: break
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    x = tf(image=rgb)['image'].unsqueeze(0)
+    with torch.no_grad():
+        od, orr = model(x)
+        d = DEFECT[od.argmax(1).item()]
+        r = ROAST[orr.argmax(1).item()]
+    cv2.putText(frame, f'Defect:{d}  Roast:{r}', (10,30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+    cv2.imshow('CoffeeBean (q=quit)', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'): break
+cap.release(); cv2.destroyAllWindows()
+
+
+----- configs/default.yaml -----
+seed: 42
+model:
+  name: efficientnet_b0
+  pretrained: true
+  n_defect: 6
+  n_roast: 5
+train:
+  epochs: 40
+  batch_size: 32
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  amp: true
+  early_stop_patience: 7
+data:
+  train_csv: data/splits/train.csv
+  val_csv:   data/splits/val.csv
+  test_csv:  data/splits/test.csv
+  img_size: 224
+
+
+================================================================================
+8. 평가 지표 (Metrics)
+================================================================================
+- Accuracy (Top-1), Macro-F1 (불균형 대응)
+- Per-class Precision / Recall / F1
+- Confusion Matrix (heatmap)
+- Roast head: Mean Absolute Error of class index (순서 라벨)
+- Inference latency (ms/frame), FPS
+- Model size (MB)
+
+
+================================================================================
+9. 실험 관리 (Reproducibility)
+================================================================================
+- random seed 고정 (numpy/torch/cuda/python random)
+- config.yaml 단일 진입점 → 실험마다 별도 yaml 저장
+- TensorBoard or Weights&Biases (wandb) 로 곡선 기록
+- 모든 체크포인트에 commit hash 저장 (git rev-parse HEAD)
+
+
+================================================================================
+10. 일정 (예시 - 2주 미니 프로젝트 기준)
+================================================================================
+D1-2 : 시나리오 확정, 데이터 수집(공개+자가), 폴더/Git 세팅
+D3   : EDA + 데이터셋/스플릿 코드
+D4   : Baseline ResNet18 학습 → 파이프라인 점검
+D5-6 : EfficientNet-B0 Multi-task 학습 + 튜닝
+D7   : 에러 분석 + 데이터 보강
+D8-9 : 성능 개선(MixUp, TTA, Ensemble)
+D10  : 웹캠 데모 + Streamlit UI
+D11  : ONNX 변환, 속도 측정
+D12  : 문서화, 결과 정리, 발표자료
+
+
+================================================================================
+11. 리스크 & 대응
+================================================================================
+- 데이터 부족          → 공개 데이터셋 + 합성 + 강한 augmentation
+- 클래스 불균형         → WeightedSampler / Focal Loss
+- 도메인 갭(조명/배경) → 실제 사용 환경 데이터 수집, 배경 증강
+- 과적합               → Dropout, MixUp, EarlyStopping, K-Fold
+- 추론 속도 느림        → MobileNetV3 + ONNX + INT8
+
+
+================================================================================
+12. .gitignore (필수)
+================================================================================
+__pycache__/
+*.pyc
+.venv/
+.env
+data/raw/
+data/processed/
+checkpoints/*.pth
+checkpoints/*.onnx
+runs/                # tensorboard
+wandb/
+.ipynb_checkpoints/
+.DS_Store
+
+
+================================================================================
+13. 다음 액션 (지금 바로 할 일)
+================================================================================
+[ ] 1. PowerShell에서 폴더 트리 생성
+[ ] 2. git init + GitHub repo 생성 + 첫 push
+[ ] 3. requirements.txt 작성 후 가상환경 설치
+[ ] 4. 데이터 수집 시작 (Kaggle 다운로드 + 스마트폰 촬영 50장 테스트)
+[ ] 5. notebooks/01_eda.ipynb 로 데이터 확인
+[ ] 6. src/dataset.py + src/model.py 스켈레톤 채우기
+[ ] 7. ResNet18 baseline 학습 실행
+
+================================================================================
+14. 왜 이렇게 설계했는가 (Design Rationale & Alternatives)
+================================================================================
+"각 선택의 이유 + 다른 방법 + 그래도 이게 더 좋은 이유"를 항목별로 정리.
+발표/보고서에서 "왜?"라는 질문에 바로 답하기 위한 근거 모음.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q1] 왜 "Multi-task (결점 + 로스팅)" 한 모델로 묶었나?
+────────────────────────────────────────────────────────────────────────────────
+선택: Backbone 1개 + Head 2개 (defect_head, roast_head)
+
+대안:
+  (A) 모델 2개 따로 학습
+      - 장점: 구조 단순, 각자 최적화 쉬움
+      - 단점: 파라미터 2배, 추론 2번, 데이터 활용 비효율
+  (B) Multi-label 단일 head (11개 sigmoid)
+      - 단점: 두 task의 의미축이 섞임 (결점=형상, 로스팅=색상)
+              서로 다른 feature 강조가 필요한데 한 head에 합치면 흐려짐
+  (C) ★ 채택: Multi-task (Hard Parameter Sharing)
+      - 공통 feature(원두 윤곽/표면) 공유 → 암묵적 정규화로 과적합 ↓
+      - 추론 1회로 두 결과 → 실시간 데모에 유리
+      - 데이터 적은 task가 많은 task의 표현을 빌려 씀
+
+왜 더 좋나:
+  데이터 부족한 미니프로젝트에서 ROI 최고. Loss 가중치(α,β)만 잘 잡으면
+  단일 모델 2개 대비 동등 이상 성능.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q2] 왜 EfficientNet-B0를 메인으로? (ViT/ResNet50/MobileNet 두고)
+────────────────────────────────────────────────────────────────────────────────
+흐름: ResNet18(baseline) → EfficientNet-B0(main) → MobileNetV3(demo)
+
+비교표:
+  모델            Param    ImgNet   CPU속도     본 프로젝트 용도
+  ResNet18        11.7M    70.0%    빠름        baseline 검증
+  ResNet50        25.6M    76.1%    보통        무거움
+  MobileNetV3-S    5.4M    75.2%    매우빠름    demo 전용
+  EffNet-B0        5.3M    77.7%    빠름        ★ main
+  ConvNeXt-T      28.6M    82.1%    보통        여유시 교체
+  ViT-B/16          86M    77.9%    느림        데이터 부족시 학습 어려움
+
+왜 EfficientNet-B0가 더 좋은가:
+  1) 동일 파라미터 대비 정확도 최상위(Compound scaling 설계)
+  2) timm pretrained weight 강력 → 적은 데이터에서도 fine-tune 잘됨
+  3) 입력 224x224 표준 → 코드 호환성 ↑
+  4) ViT는 데이터 hungry(보통 10만+ 필요), 우리는 클래스당 1~2k → CNN 압승
+  5) ConvNeXt-T가 더 정확하지만 4~5배 느리고 메모리 ↑ → 후순위
+
+ResNet18을 baseline으로 따로 두는 이유:
+  파이프라인(데이터/Loss/평가) 버그를 빠르게 잡기 위해. 표준 모델이라
+  문제 생기면 모델 탓이 아님을 빠르게 확신 가능.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q3] 왜 "Pretrained + Fine-tune"인가?
+────────────────────────────────────────────────────────────────────────────────
+대안:
+  (A) From scratch (랜덤 초기화) — 수만 장 필요, 우리는 불가
+  (B) Linear probing (backbone freeze, head만) — 빠르나 도메인 갭 있으면 한계
+  (C) ★ 2-stage Fine-tune
+      Stage1: head warm-up 5 epoch
+      Stage2: 전체 unfreeze, lr=1e-4로 미세조정
+      - 초기 head가 랜덤이라 바로 풀면 좋은 backbone weight가 망가짐
+
+왜 더 좋나:
+  소량 데이터에서 가장 검증된 레시피. Catastrophic forgetting 최소화.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q4] 왜 데이터 분할에 "GroupSplit"?
+────────────────────────────────────────────────────────────────────────────────
+문제: 같은 원두 한 알을 여러 각도로 찍으면 매우 비슷한 "쌍둥이" 이미지가
+      다수. Random split 하면 train/test에 같이 들어가 → test acc 과대평가.
+
+대안:
+  (A) Random split — 간단하나 leakage 위험
+  (B) Stratified — 클래스 비율만 맞춤, leakage 못 막음
+  (C) ★ StratifiedGroupKFold — "촬영 세션 ID"를 group으로, 클래스 균형 유지
+
+왜 더 좋나:
+  실제 배포 환경(처음 보는 원두)의 성능을 정직하게 측정.
+  "Kaggle 99% → 실전 60%" 사고 방지.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q5] 왜 Augmentation을 task별로 다르게?
+────────────────────────────────────────────────────────────────────────────────
+핵심: 로스팅 라벨은 "색"이다. ColorJitter 강하면 Light가 Dark처럼 보여
+      라벨과 모순 → 모델 혼란.
+
+선택:
+  - 결점 분류용: 색 변화 OK (saturation, brightness 강하게)
+  - 로스팅 분류용: 색 보존, 기하 변환 위주 (flip, rotate, crop)
+  - 공유 backbone: 약한 ColorJitter(0.1 이하)로 절충
+
+왜 더 좋나:
+  Augmentation은 "라벨 불변성(label-preserving)"이 전제. 라벨 깨는 변환은
+  노이즈 주입과 같음. 도메인 지식 반영이 마지막 5%를 만든다.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q6] 왜 Loss는 CrossEntropy + Label Smoothing? (Focal/Ordinal 두고)
+────────────────────────────────────────────────────────────────────────────────
+대안:
+  - Focal Loss: 극심 불균형(1:100+)에서 효과. 우리(1:5)는 과한 처방.
+  - Ordinal/CORAL: 로스팅 순서 라벨에 이론상 적합하나 구현 복잡, +1~2%p
+  - ★ Label Smoothing(0.05~0.1): 1줄 추가로 과적합↓ calibration↑ 가성비 최고
+
+왜 더 좋나:
+  "단순 baseline → 병목 확인 후 정교한 loss로 교체" 원칙. 미니프로젝트는
+  loss 튜닝보다 데이터 품질이 훨씬 영향 큼.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q7] 왜 AdamW + CosineLR?
+────────────────────────────────────────────────────────────────────────────────
+- SGD+Momentum: 대규모 데이터 최강이나 lr 튜닝 까다로움
+- Adam: 빠르나 weight decay가 잘못 적용됨(AdamW가 수정)
+- ★ AdamW: fine-tune의 표준
+- StepLR(수동) vs ★ CosineLR(부드럽게 감소, 항상 무난) vs OneCycle(강력하나 튜닝 필요)
+
+왜 더 좋나:
+  "튜닝 없이도 평균 이상"이 보장되는 안전한 조합.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q8] 왜 MixUp/CutMix?
+────────────────────────────────────────────────────────────────────────────────
+원리: 이미지+라벨 섞어 학습 → 결정 경계 부드럽게. +1~3%p.
+대안: Dropout만(약함), RandAugment(라벨 깰 위험)
+★ MixUp(전역 색 분포) + CutMix(부분 텍스처) 병행
+주의: 로스팅 task엔 MixUp이 색 평균내므로 α≤0.2.
+
+왜 더 좋나:
+  코드 몇 줄로 일반화 성능 향상되는 "공짜 점심"에 가까움.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q9] 왜 OpenCV + 자체 추론 루프? (YOLO/MediaPipe 두고)
+────────────────────────────────────────────────────────────────────────────────
+- YOLOv8: 강력하나 우리 task에 과함, AGPL 라이선스 이슈
+- MediaPipe: 사람(hand/face/pose) 특화, 원두 도메인엔 부적합
+- ★ PyTorch + OpenCV 직접: 수업 프레임워크(read→preprocess→infer→draw) 그대로
+  재사용, 모델 자유 교체, 학습 효과 ↑
+
+왜 더 좋나:
+  내가 학습한 CNN을 그대로 통합 가능. 발표/면접에서 "내 파이프라인" 어필.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q10] 왜 ONNX 내보내기?
+────────────────────────────────────────────────────────────────────────────────
+- PyTorch 그대로: 의존성 무거움(~2GB), CPU 추론 느림
+- TorchScript: 호환 OK, 속도 향상 제한
+- ★ ONNX + onnxruntime: CPU 1.5~3배↑, 가벼움, INT8 quantization 가능
+- TensorRT: GPU 최강이나 NVIDIA 종속
+
+왜 더 좋나:
+  "노트북 CPU 30FPS" 목표에 가장 합리적.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q11] 왜 timm 라이브러리?
+────────────────────────────────────────────────────────────────────────────────
+- torchvision.models: 안정적이나 모델 종류 적음
+- HuggingFace transformers: ViT 풍부, CNN 약함
+- ★ timm: CNN/ViT 1000+ 모델, 한 줄로 backbone 교체
+
+왜 더 좋나:
+  `timm.create_model('이름', pretrained=True, num_classes=0)` 한 줄로
+  모델 교체 → ablation 실험 생산성 압도적.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q12] 왜 Streamlit? (Flask/FastAPI/Gradio 두고)
+────────────────────────────────────────────────────────────────────────────────
+- Flask/FastAPI: API용, 별도 프론트 필요
+- Gradio: 매우 간단하나 커스텀 자유도 ↓
+- ★ Streamlit: Python만으로 UI/차트/업로드 → 데모 MVP 최적
+
+왜 더 좋나:
+  서비스 배포가 아닌 "결과 시각화 + 시연"이 목적. 가장 빠른 MVP.
+
+────────────────────────────────────────────────────────────────────────────────
+[Q13] 왜 GradCAM?
+────────────────────────────────────────────────────────────────────────────────
+모델이 원두를 보는지 배경 그림자를 보는지 시각 검증 → bias/leakage 잡기.
+대안 SHAP/LIME/IG는 더 정밀하나 계산비용 ↑, CNN엔 GradCAM이 가장 직관적.
+
+왜 더 좋나:
+  "성능 숫자만 말고 근거를 보여라"는 발표/보고서 가산점 포인트.
+
+────────────────────────────────────────────────────────────────────────────────
+[정리] 본 설계의 일관된 철학
+────────────────────────────────────────────────────────────────────────────────
+1) "데이터 적음 + 로컬 PC + 짧은 일정" 제약을 항상 우선
+2) 검증된 표준(ResNet, EfficientNet, AdamW, CosineLR, CE+LS)부터 시작
+3) 화려한 SOTA(ViT, ConvNeXt-L, Focal, OrdinalLoss)는 병목 확인 후 도입
+4) 도메인 지식(색=로스팅 라벨)을 augmentation/loss에 반영
+5) 재현성(seed, config, GroupSplit) > 단발성 고득점
+6) 발표용 근거(GradCAM, Confusion Matrix, ablation 표)를 처음부터 설계
+
+================================================================================
+끝.  궁금한 단계는 해당 STEP 번호 또는 Q번호로 다시 질문하면 됩니다.
+================================================================================

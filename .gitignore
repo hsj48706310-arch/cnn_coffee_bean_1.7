@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Data (대용량/민감)
+data/raw/
+data/processed/
+*.zip
+*.tar
+*.tar.gz
+
+# Model checkpoints
+checkpoints/*.pth
+checkpoints/*.pt
+checkpoints/*.onnx
+checkpoints/*.ckpt
+
+# Logs
+runs/
+logs/
+wandb/
+*.log
+
+# Notebook
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

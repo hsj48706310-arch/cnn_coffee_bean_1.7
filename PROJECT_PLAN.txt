@@ -1,214 +1,4 @@
-================================================================================
- 원두 품질 진단 & 로스팅 관리 솔루션 (Coffee Bean Quality & Roasting AI)
- - 이미지 분석 기반 CNN 프로젝트 전체 설계서 -
-================================================================================
-
-[프로젝트 한 줄 요약]
-원두 이미지를 입력받아 (1) 결점두/정상두 분류, (2) 로스팅 단계(Green~Italian)
-판별, (3) 품질 점수/리포트 생성까지 수행하는 경량 CNN 기반 솔루션.
-
-[핵심 목표]
- - 분류 정확도(Top-1) 90% 이상
- - 로컬 PC(노트북 GPU 없어도)에서 실시간 추론 30FPS 이상
- - 학습/추론/시각화 파이프라인 모듈화 → 재현성 보장
- - Git/GitHub로 협업 가능한 구조
-
-
-================================================================================
-0. 프로젝트 시나리오 (왜 만드는가)
-================================================================================
-- 사용자: 소형 로스터리 카페 사장 / 홈로스터 / QC 담당자
-- 문제 상황:
-  * 결점두(벌레먹음, 깨짐, 곰팡이, 미성숙두) 수작업 선별 → 시간/오차 큼
-  * 로스팅 단계 판별을 사람 눈/소리로만 → 일관성 부족
-- 해결: 카메라(웹캠/스마트폰)로 원두를 비추면
-  * 결점 여부 + 종류 표시
-  * 현재 로스팅 단계(Green / Light / Medium / Dark / Italian) 표시
-  * 배치(batch) 단위 품질 리포트(JSON/CSV) 자동 생성
-- 데모: 실시간 웹캠 데모 (OpenCV) + Streamlit/Gradio 웹 UI
-
-
-================================================================================
-1. 분류 문제 설계 (Task Definition)
-================================================================================
-[Task A] 결점두 분류 (Multi-class Classification)
-  Classes (예시 6):
-    0. normal           (정상두)
-    1. broken           (깨짐)
-    2. insect_damage    (벌레먹음)
-    3. immature         (미성숙/quaker)
-    4. black/sour       (흑두/발효두)
-    5. husk/foreign     (껍질/이물질)
-
-[Task B] 로스팅 단계 분류 (Ordinal Classification)
-  Classes (5):
-    0. Green   1. Light   2. Medium   3. Dark   4. Italian
-  -> 순서가 있는 라벨이므로 Ordinal Loss / Label Smoothing 고려
-
-[Task C] (확장) 품질 점수 회귀
-  - SCA 그린빈 평가 기준 응용 → 0~100 점수 예측 (Regression head)
-
->>> MVP 단계에서는 Task A + Task B (Multi-Task CNN 1개) 로 진행 권장.
-    하나의 backbone + 두 개의 head (defect_head, roast_head)
-
-
-================================================================================
-2. 데이터셋 설계 (가장 중요!! - 보완 포인트)
-================================================================================
-[2-1] 데이터 수집 소스
-  (1) 공개 데이터셋
-      - Kaggle "Coffee Bean Dataset" (roast level: Green/Light/Medium/Dark)
-      - USK-Coffee dataset (defect classification)
-      - Roboflow Universe "coffee bean" 검색 → 다수 존재
-  (2) 자가 수집 (필수, 도메인 갭 줄이기)
-      - 스마트폰 + 흰 배경(A4) + LED 조명 고정
-      - 원두 1알씩 + 여러 알 동시 두 가지 모두 촬영
-      - 클래스당 최소 500장, 목표 1000~2000장
-  (3) 합성 데이터(옵션)
-      - Copy-Paste augmentation: 정상두 위에 결점두 합성
-
-[2-2] 라벨링 도구
-  - 단일 라벨(분류): 폴더 구조로 라벨 (ImageFolder 형식)
-      data/raw/<task>/<class_name>/img_xxx.jpg
-  - 검출까지 확장 시: Roboflow / CVAT / LabelImg
-
-[2-3] 데이터 분할 (Data Leakage 방지!!)
-  - train : val : test = 70 : 15 : 15
-  - 같은 "원두 알/같은 촬영 세션"이 train/test에 동시에 들어가지 않도록
-    "촬영 세션 ID" 기준 GroupSplit 사용 (sklearn GroupShuffleSplit)
-  - 클래스 불균형 → StratifiedGroupKFold
-
-[2-4] 전처리
-  - Resize 224x224 (또는 모델별 input size)
-  - Normalize (ImageNet mean/std)
-  - 배경 제거(옵션): rembg 또는 단순 thresholding (흰 배경이면 OTSU)
-
-[2-5] 데이터 증강 (성능 향상 핵심)
-  학습 시:
-    - RandomResizedCrop, HorizontalFlip, VerticalFlip (원두는 회전 불변)
-    - RandomRotation(±30)
-    - ColorJitter(brightness, contrast, saturation) ← 로스팅 색상 중요하므로 saturation은 약하게
-    - GaussianBlur, RandomErasing
-    - MixUp / CutMix (강한 정규화)
-    - Albumentations 라이브러리 권장
-  주의:
-    - 로스팅 단계 분류에서는 ColorJitter 강하게 주면 안됨(색이 라벨!)
-      → Task B 전용 약한 증강 파이프라인 별도 구성
-
-[2-6] 데이터셋 카드(Dataset Card) 작성
-  - docs/dataset_card.md 에 수집 조건/조명/카메라/라벨 기준 명시
-  - 재현성 + 평가 신뢰도 ↑
-
-
-================================================================================
-3. 모델 설계 - "CNN이 뭔가, 어떤 CNN을 쓸 것인가"
-================================================================================
-[3-1] CNN(Convolutional Neural Network) 한 줄 정의
-  - 이미지의 "지역적 패턴(엣지→텍스처→부분→객체)"을 컨볼루션 필터로
-    계층적으로 학습하는 신경망. Conv + Pooling + Activation 반복 구조.
-
-[3-2] CNN 계열 모델 종류 (시대순 흐름)
-  1) LeNet-5 (1998)              - 손글씨, 너무 작음(학습 데모용)
-  2) AlexNet (2012)              - ImageNet 우승, ReLU/Dropout 도입
-  3) VGG16/19 (2014)             - 단순 3x3 conv 반복, 무겁지만 transfer 잘됨
-  4) GoogLeNet/Inception (2014)  - Inception module
-  5) ResNet18/34/50 (2015)       - Skip connection, **사실상 표준 baseline**
-  6) DenseNet (2016)             - dense connection
-  7) MobileNetV2/V3 (2018/19)    - Depthwise sep conv, **모바일/CPU 친화**
-  8) EfficientNet B0~B7 (2019)   - Compound scaling, 정확도/효율 균형
-  9) EfficientNetV2 (2021)       - 학습 속도 ↑
- 10) ConvNeXt (2022)             - Transformer 트렌드를 CNN에 역수입, SOTA급
- 11) (참고) ViT/Swin             - CNN은 아니지만 비교군으로 자주 사용
-
-[3-3] "내 PC에서 돌아가는" 추천 모델 (로컬 친화)
-  GPU 없음(노트북 CPU만):
-    ★ MobileNetV3-Small / Large   (param 2.5M / 5.4M, CPU 추론 빠름)
-    ★ EfficientNet-B0             (param 5.3M, 정확도 좋음)
-    ○ ResNet18                    (param 11.7M, 안정적 baseline)
-  GPU 있음(GTX1650 / RTX3060급):
-    ★ EfficientNet-B0 ~ B2
-    ★ ConvNeXt-Tiny               (param 28M, 정확도 ↑)
-    ○ ResNet50
-
-  >>> 본 프로젝트 권장:
-      Baseline  : ResNet18  (빠르게 파이프라인 검증)
-      Main      : EfficientNet-B0 (transfer learning)
-      Light/Demo: MobileNetV3-Small (실시간 웹캠용)
-
-[3-4] 아키텍처 (Multi-Task Head)
-  Input(3x224x224)
-    └─ Backbone (EfficientNet-B0, pretrained=ImageNet, freeze 후 fine-tune)
-        └─ GlobalAvgPool → Feature(1280-d)
-            ├─ Head A: Linear(1280→256)→ReLU→Dropout(0.3)→Linear(256→6)  # defect
-            └─ Head B: Linear(1280→256)→ReLU→Dropout(0.3)→Linear(256→5)  # roast
-
-  Loss = α * CE(defect) + β * CE(roast)         (α=1.0, β=1.0 → 튜닝)
-  - Class imbalance → CrossEntropy(weight=class_weights) or Focal Loss
-  - Roast head는 Label Smoothing(0.1) 또는 Ordinal regression(CORAL) 적용
-
-
-================================================================================
-4. 모델 성능 올리는 방법 (Performance Boosting Checklist)
-================================================================================
-[4-1] 데이터 레벨 (효과 가장 큼!!)
-  □ 데이터 양 늘리기 (클래스당 1000+장)
-  □ 클래스 균형 맞추기 (오버샘플링 / WeightedRandomSampler)
-  □ 강한 증강: MixUp, CutMix, RandAugment, Albumentations
-  □ 라벨 노이즈 제거: 직접 검수 + cleanlab 라이브러리
-  □ 도메인 일치: 실제 사용 환경(조명/배경)과 동일하게 수집
-
-[4-2] 모델 레벨
-  □ Pretrained weights 사용 (timm 라이브러리 강력 추천)
-  □ Backbone 단계적 unfreeze (head만 5epoch → 전체 fine-tune)
-  □ 더 큰 모델로 점진적 교체 (B0 → B2 → ConvNeXt-Tiny)
-  □ Dropout, BatchNorm 위치 점검
-  □ Test-Time Augmentation (TTA): flip/rotate 평균
-
-[4-3] 학습 레벨
-  □ Optimizer: AdamW (lr=1e-3, weight_decay=1e-4)
-  □ Scheduler: CosineAnnealingLR or OneCycleLR
-  □ Early Stopping (val_loss patience=7)
-  □ Mixed Precision (torch.cuda.amp) → 속도 2배
-  □ Gradient Clipping (max_norm=1.0)
-  □ K-Fold Cross Validation (최종 5-fold ensemble)
-
-[4-4] 손실/평가 레벨
-  □ Class weight 조정
-  □ Focal Loss (불균형 심할 때)
-  □ Confusion Matrix 보고 클래스별 약점 파악 → 데이터 추가
-
-[4-5] 후처리/배포 레벨
-  □ ONNX export → onnxruntime 추론 (CPU에서도 빠름)
-  □ Quantization (INT8) → MobileNet에 효과적
-  □ Knowledge Distillation: 큰모델(Teacher) → 작은모델(Student)
-
-
-================================================================================
-5. 프로젝트 파일 구조 (1단계: 파일 구조 짜기)
-================================================================================
-mini_project/
-├── README.md                    # 프로젝트 소개, 실행법, 결과
-├── requirements.txt             # 패키지 목록
-├── .gitignore                   # data/, *.pth, __pycache__/ 등
-├── PROJECT_PLAN.txt             # (이 문서)
-├── configs/
-│   ├── default.yaml             # 모델/학습 하이퍼파라미터
-│   └── mobilenet_demo.yaml
-├── data/
-│   ├── raw/                     # 원본 이미지 (git 제외)
-│   │   ├── defect/{normal,broken,insect,...}/
-│   │   └── roast/{green,light,medium,dark,italian}/
-│   ├── processed/               # 리사이즈/정제 후
-│   └── splits/                  # train.csv / val.csv / test.csv
-├── notebooks/
-│   ├── 01_eda.ipynb             # 데이터 분포/시각화
-│   ├── 02_baseline_resnet18.ipynb
-│   └── 03_error_analysis.ipynb
-├── src/
-│   ├── __init__.py
-│   ├── dataset.py               # Dataset, DataLoader, Augmentation
-│   ├── model.py                 # Backbone + Multi-task Head
-│   ├── losses.py                # Focal, Ordinal, MultiTask Loss
+├── losses.py                # Focal, Ordinal, MultiTask Loss
 │   ├── train.py                 # 학습 루프
 │   ├── evaluate.py              # 평가, Confusion Matrix
 │   ├── infer.py                 # 단일 이미지 추론
@@ -732,6 +522,260 @@ ResNet18을 baseline으로 따로 두는 이유:
 4) 도메인 지식(색=로스팅 라벨)을 augmentation/loss에 반영
 5) 재현성(seed, config, GroupSplit) > 단발성 고득점
 6) 발표용 근거(GradCAM, Confusion Matrix, ablation 표)를 처음부터 설계
+
+
+================================================================================
+15. v2 현실화 패치 (Kaggle 데이터만 사용 / Single-task 우선)
+================================================================================
+초기 설계(섹션 1~14)는 "한 이미지에 결점+로스팅 두 라벨이 모두 있다"는
+가정 위에 있었음. 그러나 본 프로젝트의 데이터 정책이 다음으로 확정됨:
+
+  >>> 데이터 정책: 자가 촬영 없음. 100% Kaggle 공개 데이터셋만 사용.
+
+이 제약을 반영해 설계를 현실화한다. 섹션 1~14는 "원안"으로 보존하고,
+충돌 시 본 섹션 15가 우선한다.
+
+────────────────────────────────────────────────────────────────────────────────
+[15-1] 왜 Multi-task를 1차 MVP에서 빼는가
+────────────────────────────────────────────────────────────────────────────────
+- Kaggle의 결점 데이터셋(USK-Coffee 등)과 로스팅 데이터셋(Coffee Bean
+  Dataset 등)은 "서로 다른 이미지 집합"임.
+- 같은 이미지 한 장에 defect_label과 roast_label을 동시에 부여할 방법이 없음.
+- 따라서 Multi-task CNN(공유 backbone + 두 head)을 처음부터 학습하면
+  배치마다 한쪽 head의 라벨이 비어 loss 계산 불안정.
+
+대안 (만약 굳이 multi-task를 하려면):
+  (A) 두 데이터셋을 따로 두고 매 배치 한쪽 head만 업데이트
+      - 구현 복잡도 ↑, gradient 균형 잡기 어려움
+  (B) 가짜 라벨(pseudo-label) 생성 후 multi-task
+      - 모델이 모델을 학습 → 오류 누적 위험
+  (C) ★ 채택: Single-task 두 모델로 분리. 동일 backbone(EfficientNet-B0)
+      재사용으로 코드 중복 없음. 추론 시 두 모델 순차 호출.
+
+→ 결론: **MVP는 single-task. Multi-task는 "가능하면 도전" 수준의 옵션.**
+
+────────────────────────────────────────────────────────────────────────────────
+[15-2] 새 MVP 정의 (1순위)
+────────────────────────────────────────────────────────────────────────────────
+Task: 로스팅 단계 분류 (Roast Level Classification)
+  - Classes: Green / Light / Medium / Dark   (4클래스, Kaggle 표준)
+  - 데이터: Kaggle "Coffee Bean Dataset" (예: gpiosenka/coffee-bean-dataset)
+  - 산출물: 학습 모델 + Streamlit 업로드 데모 + Confusion Matrix + GradCAM
+
+왜 로스팅을 1순위로:
+  1) Kaggle에 잘 정제된 데이터가 가장 많음 (이미 4클래스 분리)
+  2) 색이라는 명확한 시각 단서 → baseline도 빠르게 70%+ 달성 가능
+  3) 발표 시연 직관적 ("이 원두 색을 보고 medium이라 판단")
+
+────────────────────────────────────────────────────────────────────────────────
+[15-3] 새 MVP 정의 (2순위, 시간 남으면)
+────────────────────────────────────────────────────────────────────────────────
+Task: 결점두 이진 분류 (Defective vs Normal)
+  - Classes: normal / defective
+  - 데이터: USK-Coffee 또는 Roboflow Universe "coffee bean defect"
+  - 같은 backbone 코드 재사용, num_classes만 교체
+
+3순위 (확장):
+  - 결점 종류 다중 분류 (broken, insect, immature, black_sour, husk)
+  - 데이터셋 클래스 분포 확인 후 결정
+
+────────────────────────────────────────────────────────────────────────────────
+[15-4] 수정된 목표 수치
+────────────────────────────────────────────────────────────────────────────────
+원안: Top-1 Accuracy ≥ 90%, CPU 30FPS  (← 데이터 보기 전 추정치, 위험)
+
+수정:
+  1차: Validation Macro-F1 ≥ 0.70, 학습/평가 파이프라인 정상 동작
+  2차: Macro-F1 ≥ 0.80, ONNX 변환 및 CPU 추론 시간 측정/리포트
+  3차: 웹캠/Streamlit 실시간 데모 (FPS는 측정값 그대로 보고)
+
+이유:
+  - Accuracy는 클래스 불균형에 약함 → Macro-F1로 변경
+  - 수치는 "달성 약속"이 아닌 "단계별 검증 기준"으로 재정의
+  - 발표 메시지: "왜 이 수치인지, 왜 못 넘었는지/넘었는지"가 핵심
+
+────────────────────────────────────────────────────────────────────────────────
+[15-5] 수정된 데이터 폴더 구조 (섹션 5 대체)
+────────────────────────────────────────────────────────────────────────────────
+data/
+├── raw/
+│   ├── roast/                       # ★ MVP 1순위 (Kaggle 다운로드)
+│   │   ├── green/
+│   │   ├── light/
+│   │   ├── medium/
+│   │   └── dark/
+│   └── defect/                      # 2순위 (이진)
+│       ├── normal/
+│       └── defective/
+├── annotations/
+│   ├── roast.csv                    # path, label, source, kaggle_id
+│   └── defect.csv
+└── splits/
+    ├── roast_train.csv / val.csv / test.csv
+    └── defect_train.csv / val.csv / test.csv
+
+CSV 스키마 (Kaggle 전용, session_id 제거):
+  roast.csv:  path, roast_label, source(=kaggle_dataset_name)
+  defect.csv: path, defect_label, source
+
+>>> Kaggle 데이터는 동일 원두 다중각도 촬영이 적으므로 "session_id 기반
+    GroupSplit"은 불필요. 대신 **Stratified split**(클래스 비율 유지)
+    + 가능하면 데이터셋 출처(source)를 group으로 묶어 train/test에 동일
+    출처가 섞이지 않게 함(도메인 누수 방지).
+
+────────────────────────────────────────────────────────────────────────────────
+[15-6] 수정된 파일 트리 (추가/변경분)
+────────────────────────────────────────────────────────────────────────────────
+mini_project/
+├── scripts/                         # ★ 신규 (원안 누락분)
+│   ├── download_kaggle.py           # kaggle API로 자동 다운로드
+│   └── make_splits.py               # CSV 생성 + stratified split
+├── src/
+│   ├── dataset.py                   # SingleTaskDataset 으로 단순화
+│   ├── model.py                     # 단일 head (CoffeeClassifier)
+│   └── ...
+└── (나머지는 원안 유지)
+
+────────────────────────────────────────────────────────────────────────────────
+[15-7] 코드 패치 (원안 7번 코드의 버그 수정)
+────────────────────────────────────────────────────────────────────────────────
+패치 1) src/dataset.py — numpy import 누락 + Single-task 단순화
+----------------------------------------------------------------
+import numpy as np                   # ← 추가
+import pandas as pd
+from PIL import Image
+from torch.utils.data import Dataset
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+class SingleTaskDataset(Dataset):
+    """task='roast' 또는 task='defect'. CSV에 'path'와 '<task>_label' 필요."""
+    def __init__(self, csv_path, task='roast', class_to_idx=None, transform=None):
+        self.df = pd.read_csv(csv_path)
+        self.label_col = f'{task}_label'
+        self.class_to_idx = class_to_idx        # {'green':0, 'light':1, ...}
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        img = np.array(Image.open(row['path']).convert('RGB'))
+        if self.transform:
+            img = self.transform(image=img)['image']
+        y = self.class_to_idx[row[self.label_col]]
+        return img, y
+
+def get_transforms(task='roast', train=True, img_size=224):
+    if not train:
+        return A.Compose([A.Resize(img_size, img_size),
+                          A.Normalize(), ToTensorV2()])
+    if task == 'roast':                # 색 보존 (라벨이 색)
+        return A.Compose([
+            A.RandomResizedCrop(img_size, img_size, scale=(0.85,1.0)),
+            A.HorizontalFlip(), A.VerticalFlip(), A.Rotate(limit=20),
+            A.RandomBrightnessContrast(0.1, 0.1, p=0.5),  # 약하게
+            A.Normalize(), ToTensorV2(),
+        ])
+    else:                              # defect: 색 변화 OK, erasing 주의
+        return A.Compose([
+            A.RandomResizedCrop(img_size, img_size, scale=(0.8,1.0)),
+            A.HorizontalFlip(), A.VerticalFlip(), A.Rotate(limit=30),
+            A.ColorJitter(0.2, 0.2, 0.2, 0.05),
+            A.GaussianBlur(blur_limit=(3,5), p=0.2),
+            # RandomErasing/CutMix 금지 — 결점 영역을 가릴 수 있음
+            A.Normalize(), ToTensorV2(),
+        ])
+
+패치 2) src/model.py — Single-head 모델
+----------------------------------------------------------------
+import torch.nn as nn
+import timm
+
+class CoffeeClassifier(nn.Module):
+    def __init__(self, backbone='efficientnet_b0', n_classes=4, pretrained=True):
+        super().__init__()
+        self.backbone = timm.create_model(backbone, pretrained=pretrained,
+                                          num_classes=0, global_pool='avg')
+        feat = self.backbone.num_features
+        self.head = nn.Sequential(
+            nn.Linear(feat, 256), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(256, n_classes))
+    def forward(self, x):
+        return self.head(self.backbone(x))
+
+패치 3) checkpoint 로딩 안전화 (webcam_demo.py / infer.py)
+----------------------------------------------------------------
+ckpt = torch.load('checkpoints/best.pth', map_location='cpu')
+state = ckpt['model_state_dict'] if isinstance(ckpt, dict) and \
+        'model_state_dict' in ckpt else ckpt
+model.load_state_dict(state)
+
+패치 4) AMP는 CUDA에서만
+----------------------------------------------------------------
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+use_amp = bool(cfg['train'].get('amp', False)) and device == 'cuda'
+scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+패치 5) 클래스명에서 슬래시 제거
+----------------------------------------------------------------
+'black/sour' → 'black_sour'   (폴더명/CSV 안전)
+
+────────────────────────────────────────────────────────────────────────────────
+[15-8] Kaggle 데이터 자동 다운로드 (scripts/download_kaggle.py)
+────────────────────────────────────────────────────────────────────────────────
+선행 작업:
+  1) https://www.kaggle.com/settings → "Create New API Token" → kaggle.json
+  2) Windows: %USERPROFILE%\.kaggle\kaggle.json 위치에 저장
+  3) pip install kaggle
+
+스크립트 골자:
+  import os, kaggle
+  os.makedirs('data/raw', exist_ok=True)
+  # 예시 데이터셋 ID (실제 사용 전 Kaggle에서 확인 필요)
+  kaggle.api.dataset_download_files(
+      'gpiosenka/coffee-bean-dataset-resized-224-x-224',
+      path='data/raw/roast', unzip=True)
+
+>>> 후보 데이터셋 (Kaggle 검색어):
+    - "coffee bean roast"     → 로스팅 단계
+    - "USK coffee"            → 결점두
+    - "coffee defect"         → 결점두 보강
+
+────────────────────────────────────────────────────────────────────────────────
+[15-9] 수정된 일정 (2주, Kaggle 전용)
+────────────────────────────────────────────────────────────────────────────────
+D1   : Kaggle 데이터 탐색/다운로드, 폴더 정리
+D2   : EDA (클래스 분포, 해상도, 샘플 시각화), make_splits.py
+D3   : Baseline ResNet18 (single-task, roast) → 파이프라인 검증
+D4-5 : EfficientNet-B0 메인 학습 + 하이퍼파라미터 튜닝
+D6   : 에러 분석 (Confusion Matrix, GradCAM)
+D7   : 결점두 이진 분류 모델 추가 학습
+D8   : 두 모델 통합 추론 스크립트 (infer.py)
+D9   : Streamlit 데모 (이미지 업로드 → 두 결과 동시 출력)
+D10  : ONNX 변환 + CPU 추론 속도 측정
+D11  : (옵션) 웹캠 실시간 데모, Multi-task 도전
+D12  : README, 결과 정리, 발표자료
+
+────────────────────────────────────────────────────────────────────────────────
+[15-10] 무엇이 그대로 유지되는가 (원안에서 살리는 것)
+────────────────────────────────────────────────────────────────────────────────
+- 모델 라인업: ResNet18(baseline) → EfficientNet-B0(main) → MobileNetV3(demo)
+- timm 라이브러리 사용
+- AdamW + CosineLR + Label Smoothing
+- Pretrained + 2-stage Fine-tune (head warm-up → 전체 unfreeze)
+- TensorBoard 로깅, seed 고정, config.yaml 단일 진입점
+- ONNX 변환, GradCAM, Streamlit
+- 섹션 14의 Q1~Q13 설계 근거 (단, Q1 multi-task는 "확장 옵션"으로 재해석)
+
+────────────────────────────────────────────────────────────────────────────────
+[15-11] 발표 한 줄 정리 (검토 흐름까지 어필)
+────────────────────────────────────────────────────────────────────────────────
+"초기 설계는 Multi-task CNN을 가정했으나, 데이터 정책(Kaggle 전용)에 맞춰
+ Single-task 2개로 단계화하여 구현 리스크를 낮추고, 동일 backbone 재사용으로
+ 코드 중복을 제거했다. Multi-task는 동일 이미지에 양 라벨이 확보되는 시점에
+ 자연스럽게 확장 가능한 구조로 유지한다."
 
 ================================================================================
 끝.  궁금한 단계는 해당 STEP 번호 또는 Q번호로 다시 질문하면 됩니다.

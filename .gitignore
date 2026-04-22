@@ -11,12 +11,17 @@ venv/
 env/
 .env
 
-# Data (대용량/민감)
+# Data (대용량/민감/절대경로 포함)
 data/raw/
 data/processed/
+data/splits/*.csv
+data/annotations/*.csv
 *.zip
 *.tar
 *.tar.gz
+
+# Eval logs
+eval_log.txt
 
 # Model checkpoints
 checkpoints/*.pth

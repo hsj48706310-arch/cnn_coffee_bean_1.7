@@ -10,6 +10,8 @@ from pathlib import Path
 
 import torch
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # GUI 없이 파일만 저장
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import (accuracy_score, f1_score,
@@ -48,8 +50,13 @@ def main() -> None:
     ckpt_path = args.ckpt or f"{cfg['paths']['ckpt_dir']}/best_{task}.pth"
     ckpt, state = load_checkpoint(ckpt_path, device)
 
+    # 체크포인트에 저장된 config가 있으면 backbone은 그걸 우선 사용
+    ckpt_cfg = ckpt.get("config") if isinstance(ckpt, dict) else None
+    backbone = (ckpt_cfg or cfg)["model"]["name"]
+    print(f"[i] using backbone from checkpoint: {backbone}")
+
     model = CoffeeClassifier(
-        backbone=cfg["model"]["name"], n_classes=len(classes),
+        backbone=backbone, n_classes=len(classes),
         pretrained=False, dropout=cfg["model"]["dropout"],
         hidden=cfg["model"]["hidden"],
     ).to(device)

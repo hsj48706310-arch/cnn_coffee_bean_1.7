@@ -1,0 +1,35 @@
+# ============================================================
+# Default config — Roast classification (MVP 1순위)
+# ============================================================
+seed: 42
+
+task: roast                         # 'roast' or 'defect'
+classes: [green, light, medium, dark]
+
+model:
+  name: efficientnet_b0             # timm 모델명. baseline은 resnet18로 변경
+  pretrained: true
+  dropout: 0.3
+  hidden: 256
+
+train:
+  epochs: 30
+  batch_size: 32
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: cosine                 # cosine | step | none
+  warmup_epochs: 3                  # head-only warm-up (backbone freeze)
+  amp: true                         # CUDA에서만 자동 활성
+  early_stop_patience: 7
+  num_workers: 2
+  label_smoothing: 0.1
+
+data:
+  train_csv: data/splits/roast_train.csv
+  val_csv:   data/splits/roast_val.csv
+  test_csv:  data/splits/roast_test.csv
+  img_size: 224
+
+paths:
+  ckpt_dir: checkpoints
+  log_dir:  runs

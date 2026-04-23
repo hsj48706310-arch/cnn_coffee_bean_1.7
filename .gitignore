@@ -27,6 +27,7 @@ eval_log.txt
 checkpoints/*.pth
 checkpoints/*.pt
 checkpoints/*.onnx
+checkpoints/*.onnx.data
 checkpoints/*.ckpt
 
 # Logs

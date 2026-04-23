@@ -28,8 +28,12 @@ def main() -> None:
     out_path = args.out or f"{cfg['paths']['ckpt_dir']}/best_{task}.onnx"
 
     _, state = load_checkpoint(ckpt_path, "cpu")
+    ckpt_full = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    ckpt_cfg = ckpt_full.get("config") if isinstance(ckpt_full, dict) else None
+    backbone = (ckpt_cfg or cfg)["model"]["name"]
+    print(f"[i] using backbone from checkpoint: {backbone}")
     model = CoffeeClassifier(
-        backbone=cfg["model"]["name"], n_classes=len(classes), pretrained=False,
+        backbone=backbone, n_classes=len(classes), pretrained=False,
         dropout=cfg["model"]["dropout"], hidden=cfg["model"]["hidden"],
     )
     model.load_state_dict(state); model.eval()

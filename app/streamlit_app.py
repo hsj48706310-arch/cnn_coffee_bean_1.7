@@ -33,9 +33,13 @@ def load_model(cfg_path: str, ckpt_path: str):
     c2i = {c: i for i, c in enumerate(classes)}
     device = "cpu"
     ckpt_path = ckpt_path or f"{cfg['paths']['ckpt_dir']}/best_{task}.pth"
-    _, state = load_checkpoint(ckpt_path, device)
+    ckpt_full = torch.load(ckpt_path, map_location=device, weights_only=False)
+    state = ckpt_full["model_state_dict"] if isinstance(ckpt_full, dict) and \
+            "model_state_dict" in ckpt_full else ckpt_full
+    ckpt_cfg = ckpt_full.get("config") if isinstance(ckpt_full, dict) else None
+    backbone = (ckpt_cfg or cfg)["model"]["name"]
     model = CoffeeClassifier(
-        backbone=cfg["model"]["name"], n_classes=len(classes), pretrained=False,
+        backbone=backbone, n_classes=len(classes), pretrained=False,
         dropout=cfg["model"]["dropout"], hidden=cfg["model"]["hidden"],
     )
     model.load_state_dict(state); model.eval()

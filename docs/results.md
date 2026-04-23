@@ -76,14 +76,16 @@ Defect:  E01 0.44  E02 0.56  E03 0.47  E04 0.72  E05 0.73  E06 0.75  E07 0.80 �
 
 ---
 
-## Inference Speed (CPU, single image, ResNet18 baseline 측정값)
+## Inference Speed (CPU, single image)
 
-| Runtime | Latency | FPS |
-|---|---|---|
-| PyTorch CPU | 21.30 ms | 46.9 |
-| **ONNX Runtime CPU** | **6.38 ms** | **156.8** |
+| Model | Runtime | Latency | FPS | Speedup |
+|---|---|---|---|---|
+| Roast (ResNet18, baseline)   | PyTorch CPU      | 21.30 ms | 46.9  | 1.0× |
+| Roast (ResNet18, baseline)   | **ONNX Runtime** | **6.38 ms** | **156.8** | **3.3×** |
+| Defect (EfficientNet-B0)     | PyTorch CPU      | 23.34 ms | 42.8  | 1.0× |
+| Defect (EfficientNet-B0)     | **ONNX Runtime** | **4.74 ms** | **211.2** | **4.9×** |
 
-→ ONNX 변환 시 **3.3× 가속**, 실시간(30 FPS) 요구 충분히 충족.
+→ ONNX 변환 시 두 모델 모두 실시간(30 FPS) 요구 충분히 충족.
 
 ---
 

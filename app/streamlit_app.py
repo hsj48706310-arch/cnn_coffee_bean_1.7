@@ -1,4 +1,4 @@
-"""Streamlit demo: roast / defect classification toggle."""
+"""Streamlit 데모: 로스팅/결점두 분류 토글."""
 from __future__ import annotations
 import sys
 from pathlib import Path
@@ -16,31 +16,31 @@ from src.utils.config import load_config  # noqa: E402
 from src.dataset import get_transforms  # noqa: E402
 from src.model import CoffeeClassifier  # noqa: E402
 
-st.set_page_config(page_title="Coffee Bean AI", page_icon="coffee", layout="centered")
-st.title("Coffee Bean Quality and Roasting AI")
-st.caption("EfficientNet-B0 dual model demo (roast 4-cls / defect 17-cls).")
+st.set_page_config(page_title="커피 원두 AI", page_icon="☕", layout="centered")
+st.title("☕ 커피 원두 품질 & 로스팅 AI")
+st.caption("EfficientNet-B0 두 모델 데모 — 로스팅(4분류) · 결점두(17분류)")
 
 TASKS = {
-    "Roast (4-class)": {
+    "🔥 로스팅 분류 (4클래스)": {
         "config": "configs/default.yaml",
         "ckpt": "checkpoints/best_roast.pth",
-        "metric": "Test acc 0.940 / macro F1 0.940",
+        "metric": "테스트 정확도 0.940 · 매크로 F1 0.940",
     },
-    "Defect (17-class)": {
+    "🐛 결점두 분류 (17클래스)": {
         "config": "configs/defect.yaml",
         "ckpt": "checkpoints/best_defect.pth",
-        "metric": "Test acc 0.782 / macro F1 0.787",
+        "metric": "테스트 정확도 0.782 · 매크로 F1 0.787",
     },
 }
-choice = st.sidebar.radio("Model", list(TASKS.keys()))
+choice = st.sidebar.radio("모델 선택", list(TASKS.keys()))
 sel = TASKS[choice]
 st.sidebar.caption(sel["metric"])
 st.sidebar.divider()
-CFG_PATH = st.sidebar.text_input("config path", sel["config"])
-CKPT_PATH = st.sidebar.text_input("checkpoint path", sel["ckpt"])
+CFG_PATH = st.sidebar.text_input("config 경로", sel["config"])
+CKPT_PATH = st.sidebar.text_input("checkpoint 경로", sel["ckpt"])
 
 
-@st.cache_resource(show_spinner="Loading model...")
+@st.cache_resource(show_spinner="모델 로딩 중...")
 def load_model(cfg_path: str, ckpt_path: str):
     cfg = load_config(cfg_path)
     task, classes = cfg["task"], cfg["classes"]
@@ -63,12 +63,12 @@ def load_model(cfg_path: str, ckpt_path: str):
 
 try:
     model, tf, classes, c2i, task, backbone = load_model(CFG_PATH, CKPT_PATH)
-    st.success(f"Loaded: task={task}, backbone={backbone}, n_classes={len(classes)}")
+    st.success(f"✅ 모델 로딩 완료 — task=**{task}** · backbone=**{backbone}** · 클래스 {len(classes)}개")
 except Exception as e:
-    st.error(f"Load failed: {e}")
+    st.error(f"❌ 모델 로딩 실패: {e}\n먼저 학습을 실행해서 체크포인트를 생성해주세요.")
     st.stop()
 
-up = st.file_uploader("Upload bean image(s)", type=["jpg", "jpeg", "png"],
+up = st.file_uploader("원두 이미지 업로드 (여러 장 가능)", type=["jpg", "jpeg", "png"],
                       accept_multiple_files=True)
 
 TOPK = 3 if len(classes) <= 5 else 5
@@ -88,10 +88,10 @@ if up:
         with c1:
             st.image(img, use_container_width=True)
         with c2:
-            st.metric("Prediction", classes[top], f"{probs[top]*100:.1f}%")
+            st.metric("예측 결과", classes[top], f"{probs[top]*100:.1f}%")
             topk_df = pd.DataFrame({
-                "class": [classes[i] for i in order[:TOPK]],
-                "prob":  [float(probs[i]) for i in order[:TOPK]],
+                "클래스": [classes[i] for i in order[:TOPK]],
+                "확률":   [float(probs[i]) for i in order[:TOPK]],
             })
             st.dataframe(topk_df, hide_index=True, use_container_width=True)
 
@@ -106,9 +106,9 @@ if up:
 
     if len(rows) > 1:
         df = pd.DataFrame(rows)
-        st.download_button("Download CSV report",
+        st.download_button("📥 CSV 리포트 다운로드",
                            df.to_csv(index=False).encode("utf-8"),
                            file_name=f"coffee_predictions_{task}.csv",
                            mime="text/csv")
 else:
-    st.info("Pick a model in the sidebar and upload images to start.")
+    st.info("👆 왼쪽 사이드바에서 모델을 선택하고 이미지를 업로드해주세요.")

@@ -1,0 +1,70 @@
+{
+  "roast": {
+    "task": "roast",
+    "n_classes": 4,
+    "n_test": 150,
+    "test_acc": 0.94,
+    "test_macro_f1": 0.9400423394943944,
+    "ckpt_val_macro_f1": 0.9666571809686445,
+    "ckpt_epoch": 3,
+    "classes": [
+      "green",
+      "light",
+      "medium",
+      "dark"
+    ],
+    "per_class_f1": {
+      "green": 0.9866666666666667,
+      "light": 0.918918918918919,
+      "medium": 0.9230769230769231,
+      "dark": 0.9315068493150684
+    }
+  },
+  "defect": {
+    "task": "defect",
+    "n_classes": 17,
+    "n_test": 147,
+    "test_acc": 0.782312925170068,
+    "test_macro_f1": 0.7870954977356361,
+    "ckpt_val_macro_f1": 0.8002838696610323,
+    "ckpt_epoch": 7,
+    "classes": [
+      "broken",
+      "cut",
+      "dry cherry",
+      "fade",
+      "floater",
+      "full black",
+      "full sour",
+      "fungus damange",
+      "husk",
+      "immature",
+      "parchment",
+      "partial black",
+      "partial sour",
+      "severe insect damange",
+      "shell",
+      "slight insect damage",
+      "withered"
+    ],
+    "per_class_f1": {
+      "broken": 0.9411764705882353,
+      "cut": 0.7777777777777778,
+      "dry cherry": 1.0,
+      "fade": 0.42857142857142855,
+      "floater": 0.8571428571428571,
+      "full black": 1.0,
+      "full sour": 0.7,
+      "fungus damange": 0.75,
+      "husk": 1.0,
+      "immature": 0.7142857142857143,
+      "parchment": 0.8571428571428571,
+      "partial black": 0.8181818181818182,
+      "partial sour": 0.7058823529411765,
+      "severe insect damange": 0.7142857142857143,
+      "shell": 0.9411764705882353,
+      "slight insect damage": 0.8,
+      "withered": 0.375
+    }
+  }
+}

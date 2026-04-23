@@ -1,0 +1,52 @@
+# ============================================================
+# Defect classification (17 classes, green coffee bean defects)
+# ============================================================
+seed: 42
+
+task: defect
+classes:
+  - broken
+  - cut
+  - dry cherry
+  - fade
+  - floater
+  - full black
+  - full sour
+  - fungus damange
+  - husk
+  - immature
+  - parchment
+  - partial black
+  - partial sour
+  - severe insect damange
+  - shell
+  - slight insect damage
+  - withered
+
+model:
+  name: efficientnet_b0
+  pretrained: true
+  dropout: 0.3
+  hidden: 256
+
+train:
+  epochs: 30
+  batch_size: 32
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  warmup_epochs: 3
+  amp: true
+  early_stop_patience: 7
+  num_workers: 2
+  label_smoothing: 0.1
+
+data:
+  train_csv: data/splits/defect_train.csv
+  val_csv:   data/splits/defect_val.csv
+  test_csv:  data/splits/defect_test.csv
+  img_size: 224
+
+paths:
+  ckpt_dir: checkpoints
+  log_dir:  runs

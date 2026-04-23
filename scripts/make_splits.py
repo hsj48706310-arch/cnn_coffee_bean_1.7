@@ -63,6 +63,8 @@ def main() -> None:
     p.add_argument("--out_split", default="data/splits")
     p.add_argument("--classes", nargs="+", default=None,
                    help="클래스 목록. 미지정 시 task별 기본값 사용")
+    p.add_argument("--max_samples", type=int, default=None,
+                   help="총 샘플 수 상한. stratified 다운샘플링.")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
@@ -80,6 +82,17 @@ def main() -> None:
 
     print("[+] class distribution:")
     print(df[f"{args.task}_label"].value_counts())
+
+    if args.max_samples and len(df) > args.max_samples:
+        n = args.max_samples
+        frac = n / len(df)
+        parts = []
+        for _, g in df.groupby(f"{args.task}_label"):
+            k = max(1, int(round(len(g) * frac)))
+            parts.append(g.sample(k, random_state=args.seed))
+        df = pd.concat(parts, ignore_index=True)
+        print(f"[+] downsampled to {len(df)} rows (target {n})")
+        print(df[f"{args.task}_label"].value_counts())
 
     Path(args.out_ann).mkdir(parents=True, exist_ok=True)
     Path(args.out_split).mkdir(parents=True, exist_ok=True)

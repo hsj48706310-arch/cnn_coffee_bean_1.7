@@ -89,9 +89,14 @@ def main() -> None:
 
     cm = confusion_matrix(y_true, y_pred)
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
-    plt.figure(figsize=(6, 5))
+    n = len(classes)
+    side = max(6, int(0.55 * n) + 4)
+    plt.figure(figsize=(side, side - 1))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                xticklabels=classes, yticklabels=classes)
+                xticklabels=classes, yticklabels=classes,
+                annot_kws={"size": 8 if n > 8 else 10})
+    plt.xticks(rotation=45, ha="right")
+    plt.yticks(rotation=0)
     plt.xlabel("predicted"); plt.ylabel("true")
     plt.title(f"Confusion Matrix ({task})  acc={acc:.3f}  f1={f1:.3f}")
     plt.tight_layout()

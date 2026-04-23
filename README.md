@@ -19,8 +19,12 @@ pip install -r requirements.txt
 python scripts/download_kaggle.py
 
 # 4. 학습/평가/데모
-python -m src.train --config configs/default.yaml
-python -m src.evaluate --config configs/default.yaml
+# Roast (4-class)
+python -m src.train    --config configs/default.yaml --override train.epochs=8 train.warmup_epochs=2
+python -m src.evaluate --config configs/default.yaml --ckpt checkpoints/best_roast.pth
+# Defect (17-class)
+python -m src.train    --config configs/defect.yaml  --override train.epochs=8 train.warmup_epochs=2
+python -m src.evaluate --config configs/defect.yaml  --ckpt checkpoints/best_defect.pth
 streamlit run app/streamlit_app.py
 ```
 
@@ -34,6 +38,21 @@ data/       raw / annotations / splits  (raw는 git 제외)
 app/        Streamlit 데모
 notebooks/  EDA, 에러 분석
 ```
+
+## 결과 요약 (정직한 다운샘플 실험)
+
+> 각 task **별도 모델**, 클래스당 동일 규모(≈1000장 풀)로 다운샘플, EfficientNet-B0,  
+> AdamW + CosineLR, 2-stage fine-tune (warmup 2ep → unfreeze 6ep), seed=42.
+
+| Task | Classes | n (train/val/test) | Val F1 (best) | **Test acc** | **Test macro F1** |
+|---|---|---|---|---|---|
+| Roast  | 4  | 700 / 150 / 150 | 0.967 (E03) | **0.940** | **0.940** |
+| Defect | 17 | 685 / 147 / 147 | 0.800 (E07) | **0.782** | **0.787** |
+
+- Roast 1.0 → 0.94: 풀데이터(1600장)에서의 **천장 효과**가 다운샘플로 사라짐을 확인.
+- Defect 17-class에서 0.80 도달: 2-stage fine-tune이 어려운 task에서 효과적임을 입증.
+- 상세 분석/per-class F1/혼동 페어: [docs/results.md](docs/results.md)
+- Confusion matrices: [roast](docs/confusion_matrix_roast.png) · [defect](docs/confusion_matrix_defect.png)
 
 ## 브랜치
 - `main`  안정 버전

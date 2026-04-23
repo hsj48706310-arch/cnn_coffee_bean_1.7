@@ -1,3 +1,8 @@
+ # 설명 파일 위치 C:\Projects\mini_project\docs\WORKLOG.md  |  C:\Projects\mini_project\PROJECT_PLAN.txt 먼저 보시고 보시면 좋습니다
+ 
+
+
+
 # Coffee Bean Quality & Roasting AI (cnn_coffee_bean_1.7)
 
 원두 이미지를 입력받아 **로스팅 단계** 및 **결점두 여부**를 분류하는 CNN 기반

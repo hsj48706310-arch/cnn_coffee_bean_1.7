@@ -40,3 +40,32 @@ Quick run scripts
 
 PowerShell -ExecutionPolicy Bypass -File scripts/train_gpu.ps1
 PowerShell -ExecutionPolicy Bypass -File scripts/train_cpu.ps1
+
+Roast classification (separate model)
+
+1) Build classification crops from detection labels (roasted-beans vs under_roast):
+
+uv run --active prepare_roast_cls_dataset.py
+
+2) Train a dedicated classifier:
+
+uv run --active train_roast_cls.py --device cpu --epochs 20 --imgsz 224 --batch 64
+
+Quick scripts:
+
+PowerShell -ExecutionPolicy Bypass -File scripts/train_roast_cls_cpu.ps1
+PowerShell -ExecutionPolicy Bypass -File scripts/train_roast_cls_gpu.ps1
+
+Unified Web UI (detection + roast classification)
+
+Run one app with two tabs:
+
+PowerShell -ExecutionPolicy Bypass -File scripts/run_web_ui.ps1
+
+Or run directly:
+
+uv run --active web_app.py
+
+Default model paths used by the app:
+- Detection: artifacts/train/coffee_yolo26n_final/weights/best.pt
+- Classification: artifacts/cls/roast_cls_v8n_cpu/weights/best.pt

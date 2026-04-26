@@ -13,3 +13,6 @@ wheels/
 datasets/
 artifacts/
 runs/
+
+# Downloaded model checkpoints
+yolo26n.pt

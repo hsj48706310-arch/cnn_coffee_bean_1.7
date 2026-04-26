@@ -6,19 +6,29 @@ Train setup (YOLO26n + Roboflow export)
 
 datasets/Coffee Defect.v1-coffee-bean_yolo26n.yolo26
 
-2) Run training:
+2) Sync dependencies in this project folder:
 
-c:/miniproject1.7/.venv/Scripts/python.exe main.py
+uv sync --active
+
+3) Run training:
+
+uv run --active main.py
 
 Useful options:
 
-c:/miniproject1.7/.venv/Scripts/python.exe main.py --epochs 200 --batch 8 --imgsz 640
-c:/miniproject1.7/.venv/Scripts/python.exe main.py --device cpu
+uv run --active main.py --epochs 200 --batch 8 --imgsz 640
+uv run --active main.py --device cpu
 
 If your installed Ultralytics build does not provide yolo26n weights,
 pass a local checkpoint path with:
 
 --model path/to/yolo26n.pt
+
+If you see this warning:
+
+warning: `VIRTUAL_ENV=...` does not match the project environment path `.venv`
+
+run with --active as above from this folder, or deactivate the other virtual environment first.
 
 Output layout
 

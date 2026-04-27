@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--project", type=Path, default=None, help="Output project directory")
 	parser.add_argument("--name", default="coffee_yolo26n", help="Run name")
 	parser.add_argument("--exist-ok", action="store_true", help="Allow overwriting existing run folder")
+	parser.add_argument("--workers", type=int, default=4, help="Number of DataLoader workers")
 	return parser
 
 
@@ -58,6 +59,7 @@ def main() -> None:
 		project=str(project_path),
 		name=args.name,
 		exist_ok=args.exist_ok,
+		workers=args.workers,
 	)
 
 

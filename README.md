@@ -40,3 +40,40 @@ Quick run scripts
 
 PowerShell -ExecutionPolicy Bypass -File scripts/train_gpu.ps1
 PowerShell -ExecutionPolicy Bypass -File scripts/train_cpu.ps1
+
+Roasting classifier training (EfficientNetV2-S)
+
+PowerShell -ExecutionPolicy Bypass -File scripts/train_roast_gpu.ps1
+PowerShell -ExecutionPolicy Bypass -File scripts/train_roast_cpu.ps1
+
+Recommended concurrent training setup (single RTX 4060 Laptop GPU)
+
+1) Run defect detection (YOLO26n) on GPU with a smaller batch to reduce VRAM spikes.
+2) Run roasting classification on CPU, or run both on GPU only with reduced batch sizes.
+
+Example concurrent commands:
+
+PowerShell -ExecutionPolicy Bypass -File scripts/train_gpu.ps1
+PowerShell -ExecutionPolicy Bypass -File scripts/train_roast_cpu.ps1
+
+Roasting classification dataset (crop generation)
+
+Build a separate classification dataset for roasting-stage labels
+(`roasted-beans`, `under_roast`) from YOLO annotations:
+
+c:/miniproject1.7/.venv/Scripts/python.exe scripts/build_roast_cls_dataset.py --overwrite
+
+Quick sanity check (small subset):
+
+c:/miniproject1.7/.venv/Scripts/python.exe scripts/build_roast_cls_dataset.py --overwrite --max-label-files-per-split 1000
+
+Representative subset sampling (recommended for quick checks):
+
+c:/miniproject1.7/.venv/Scripts/python.exe scripts/build_roast_cls_dataset.py --overwrite --max-label-files-per-split 1000 --shuffle-label-files
+
+Output:
+
+artifacts/roast_cls_dataset/train/<class_name>
+artifacts/roast_cls_dataset/val/<class_name>
+artifacts/roast_cls_dataset/test/<class_name>
+artifacts/roast_cls_dataset/manifest.csv

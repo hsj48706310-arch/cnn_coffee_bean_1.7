@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coffee Defect UI Draft</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=SUIT:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="coffee-bg" aria-hidden="true"></div>
+
+  <main class="app-shell">
+    <section id="model-screen" class="screen screen-active">
+      <div class="hero-card">
+        <p class="kicker">Coffee Vision Pilot</p>
+        <h1>모델을 먼저 선택해주세요</h1>
+        <p class="subtitle">결점두 검출과 로스팅 단계 판별 UI 초안입니다.</p>
+
+        <div class="model-grid">
+          <button class="model-btn" data-model="yolo26n">
+            <span class="chip">YOLO26n</span>
+            <strong>모바일용</strong>
+            <small>가볍고 빠른 처리</small>
+          </button>
+
+          <button class="model-btn" data-model="yolo26s">
+            <span class="chip">YOLO26s</span>
+            <strong>웹용</strong>
+            <small>정확도 중심 분석</small>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="dashboard-screen" class="screen">
+      <header class="topbar">
+        <div>
+          <p class="kicker">Selected Model</p>
+          <h2 id="model-title">웹용 (YOLO26s)</h2>
+        </div>
+        <button id="change-model" class="ghost-btn">모델 다시 선택</button>
+      </header>
+
+      <div class="panel-grid">
+        <article class="panel upload-panel">
+          <h3>이미지 업로드</h3>
+          <label class="dropzone" for="image-input">
+            <input id="image-input" type="file" accept="image/*" />
+            <span>이미지를 드래그하거나 클릭해서 업로드</span>
+          </label>
+          <img id="preview" alt="업로드 미리보기" />
+          <p id="status-line" class="status-line">이미지를 업로드하고 분석 실행을 눌러주세요.</p>
+          <button id="analyze-btn" class="primary-btn">분석 실행</button>
+        </article>
+
+        <article class="panel result-panel">
+          <h3>검출 결과</h3>
+          <div class="result-box" id="detect-result">
+            결점두 검출 결과가 이곳에 표시됩니다.
+          </div>
+
+          <h3>로스팅 단계</h3>
+          <div class="result-box" id="roast-result">
+            로스팅 단계 판별 결과가 이곳에 표시됩니다.
+          </div>
+
+          <h3>결과 이미지</h3>
+          <img id="result-image" alt="검출 결과 이미지" />
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

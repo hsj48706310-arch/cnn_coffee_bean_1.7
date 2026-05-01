@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--name", default="coffee_yolo26n", help="Run name")
 	parser.add_argument("--exist-ok", action="store_true", help="Allow overwriting existing run folder")
 	parser.add_argument("--workers", type=int, default=4, help="Number of DataLoader workers")
+	parser.add_argument("--resume", action="store_true", help="Resume training from checkpoint")
 	return parser
 
 
@@ -60,6 +61,7 @@ def main() -> None:
 		name=args.name,
 		exist_ok=args.exist_ok,
 		workers=args.workers,
+		resume=args.resume,
 	)
 
 
